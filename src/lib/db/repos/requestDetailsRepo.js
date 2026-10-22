@@ -1,5 +1,6 @@
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { runBackground } from "../../background.js";
 
 const DEFAULT_MAX_RECORDS = 200;
 const DEFAULT_BATCH_SIZE = 20;
@@ -146,11 +147,14 @@ export async function saveRequestDetail(detail) {
 
   writeBuffer.push(detail);
 
-  // Trigger immediate flush if batch threshold reached.
-  // flushToDatabase() drains entire buffer in a loop, so all pushes during await are persisted.
-  if (writeBuffer.length >= config.batchSize) {
+  // On Cloudflare Workers / serverless isolates, memory is not persistent and timers don't fire after response.
+  // Flush immediately via runBackground() so records are written to D1 before the isolate suspends.
+  const isServerless = typeof globalThis !== "undefined" && (!!globalThis[Symbol.for("__cloudflare-context__")] || !!globalThis.__D1_ADAPTER);
+
+  if (isServerless || writeBuffer.length >= config.batchSize) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-    flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
+    const p = flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
+    runBackground(p);
   } else if (!flushTimer) {
     flushTimer = setTimeout(() => {
       flushTimer = null;

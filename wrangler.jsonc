@@ -21,9 +21,6 @@
     "NODE_ENV": "production",
     "DATA_DIR": "/tmp"
   },
-  "placement": {
-    "region": "gcp:us-central1"
-  },
   "triggers": {
     "crons": [
       "*/30 * * * *"

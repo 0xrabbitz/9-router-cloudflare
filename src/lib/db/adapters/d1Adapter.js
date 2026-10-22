@@ -7,7 +7,8 @@ export function createD1Adapter(d1) {
   function prepare(sql, params = []) {
     const p = Array.isArray(params) ? params : [params];
     if (p.length > 0) {
-      return d1.prepare(sql).bind(...p);
+      const sanitized = p.map((v) => (v === undefined ? null : v));
+      return d1.prepare(sql).bind(...sanitized);
     }
     return d1.prepare(sql);
   }

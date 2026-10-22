@@ -7,6 +7,13 @@ const state = global._dbAdapter;
 async function tryD1() {
   if (globalThis.__D1_ADAPTER) return globalThis.__D1_ADAPTER;
   try {
+    const globalContext = globalThis[Symbol.for("__cloudflare-context__")];
+    if (globalContext?.env?.DB) {
+      const { createD1Adapter } = await import("./adapters/d1Adapter.js");
+      const adapter = createD1Adapter(globalContext.env.DB);
+      globalThis.__D1_ADAPTER = adapter;
+      return adapter;
+    }
     const { getCloudflareContext } = await import("@opennextjs/cloudflare");
     const ctx = await getCloudflareContext({ async: true });
     if (ctx?.env?.DB) {
