@@ -1,8 +1,22 @@
 import { ensureDirs, DATA_FILE } from "./paths.js";
+import { stripNullBytes } from "./helpers/nullBytes.js";
 
 // Use global to survive Next.js dev hot-reload (module state resets on reload)
 if (!global._dbAdapter) global._dbAdapter = { instance: null, initPromise: null, logged: false };
 const state = global._dbAdapter;
+
+/**
+ * Make every bound string NUL-safe, once, for all drivers.
+ */
+function withNullByteSafeParams(adapter) {
+  const clean = (params) => (Array.isArray(params) ? params.map(stripNullBytes) : params);
+  return {
+    ...adapter,
+    run: (sql, params = []) => adapter.run(sql, clean(params)),
+    get: (sql, params = []) => adapter.get(sql, clean(params)),
+    all: (sql, params = []) => adapter.all(sql, clean(params)),
+  };
+}
 
 async function tryD1() {
   if (globalThis.__D1_ADAPTER) return globalThis.__D1_ADAPTER;
@@ -10,7 +24,7 @@ async function tryD1() {
     const globalContext = globalThis[Symbol.for("__cloudflare-context__")];
     if (globalContext?.env?.DB) {
       const { createD1Adapter } = await import("./adapters/d1Adapter.js");
-      const adapter = createD1Adapter(globalContext.env.DB);
+      const adapter = withNullByteSafeParams(createD1Adapter(globalContext.env.DB));
       globalThis.__D1_ADAPTER = adapter;
       return adapter;
     }
@@ -18,7 +32,7 @@ async function tryD1() {
     const ctx = await getCloudflareContext({ async: true });
     if (ctx?.env?.DB) {
       const { createD1Adapter } = await import("./adapters/d1Adapter.js");
-      const adapter = createD1Adapter(ctx.env.DB);
+      const adapter = withNullByteSafeParams(createD1Adapter(ctx.env.DB));
       globalThis.__D1_ADAPTER = adapter;
       return adapter;
     }
@@ -72,6 +86,10 @@ async function initAdapter() {
   if (!adapter) adapter = await tryNodeSqlite();
   if (!adapter) adapter = await trySqlJs();
   if (!adapter) throw new Error("[DB] No SQLite/D1 driver available");
+
+  if (adapter.driver !== "cloudflare-d1") {
+    adapter = withNullByteSafeParams(adapter);
+  }
 
   if (!state.logged) {
     console.log(`[DB] Driver: ${adapter.driver}`);

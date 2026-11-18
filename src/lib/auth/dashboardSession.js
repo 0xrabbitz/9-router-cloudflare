@@ -9,6 +9,8 @@ import { getSettings } from "@/lib/localDb";
 const DEFAULT_PASSWORD = "123456";
 const SESSION_MAX_AGE_SEC = 24 * 60 * 60;
 
+let cachedSecret = null;
+
 function loadJwtSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
   const file = path.join(DATA_DIR, "jwt-secret");
@@ -21,11 +23,20 @@ function loadJwtSecret() {
     fs.writeFileSync(file, generated, { mode: 0o600 });
     return generated;
   } catch {
+    console.warn("[SECURITY] JWT_SECRET is not configured in environment; falling back to default edge JWT secret.");
     return "9router-edge-jwt-default-secret-replace-in-env";
   }
 }
 
-const SECRET = new TextEncoder().encode(loadJwtSecret());
+function getJwtSecret() {
+  if (process.env.JWT_SECRET) {
+    return new TextEncoder().encode(process.env.JWT_SECRET);
+  }
+  if (!cachedSecret) {
+    cachedSecret = new TextEncoder().encode(loadJwtSecret());
+  }
+  return cachedSecret;
+}
 
 export function shouldUseSecureCookie(request) {
   const forceSecureCookie = process.env.AUTH_COOKIE_SECURE === "true";
@@ -39,13 +50,13 @@ export async function createDashboardAuthToken(claims = {}) {
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime("24h")
-    .sign(SECRET);
+    .sign(getJwtSecret());
 }
 
 export async function verifyDashboardAuthToken(token) {
   if (!token) return false;
   try {
-    await jwtVerify(token, SECRET);
+    await jwtVerify(token, getJwtSecret());
     return true;
   } catch {
     return false;
@@ -55,7 +66,7 @@ export async function verifyDashboardAuthToken(token) {
 export async function getDashboardAuthSession(token) {
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, SECRET);
+    const { payload } = await jwtVerify(token, getJwtSecret());
     return payload;
   } catch {
     return null;

@@ -1,5 +1,6 @@
 // Cloudflare D1 Adapter for 9Router
 // Connects 9Router to Cloudflare D1 serverless database
+import { createTransactionRunner } from "../helpers/asyncTransaction.js";
 
 export function createD1Adapter(d1) {
   if (!d1) throw new Error("[D1Adapter] D1 database binding is required");
@@ -67,10 +68,7 @@ export function createD1Adapter(d1) {
     }
   }
 
-  async function transaction(fn) {
-    // In D1, batching or serial execution handles consistency
-    return await fn();
-  }
+  const transaction = createTransactionRunner(null);
 
   function close() {
     // No-op for serverless D1

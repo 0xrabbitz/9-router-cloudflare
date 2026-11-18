@@ -15,6 +15,7 @@ export function parseDataUri(url) {
 import { lookup } from "node:dns/promises";
 import { Agent } from "undici";
 import { MAX_IMAGE_BYTES, FETCH_TIMEOUT_MS, IMAGE_SIGNATURES, BLOCKED_HOSTS } from "../../config/mediaConfig.js";
+import { isCloudflareWorker } from "../../utils/runtimeEnv.js";
 
 // True if an IPv4/IPv6 address is private/reserved (SSRF target).
 function isPrivateIp(ip) {
@@ -88,14 +89,20 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
   const timeout = signal ? null : setTimeout(() => controller.abort(), timeoutMs);
   const fetchSignal = signal || controller.signal;
 
+  const useAgent = !isCloudflareWorker();
   // Pin connect to the validated IP so no second DNS resolution can rebind (TOCTOU fix).
-  const dispatcher = new Agent({
-    connect: { lookup: (_h, _o, cb) => cb(null, [{ address: pinnedIps[0].address, family: pinnedIps[0].family }]) },
-  });
+  const dispatcher = useAgent
+    ? new Agent({
+        connect: { lookup: (_h, _o, cb) => cb(null, [{ address: pinnedIps[0].address, family: pinnedIps[0].family }]) },
+      })
+    : null;
 
   try {
     // redirect:"manual" prevents a public URL redirecting to a private one (SSRF bypass).
-    const response = await fetch(imageUrl, { signal: fetchSignal, redirect: "manual", dispatcher });
+    const response = await fetch(
+      imageUrl,
+      dispatcher ? { signal: fetchSignal, redirect: "manual", dispatcher } : { signal: fetchSignal, redirect: "manual" }
+    );
     if (!response.ok || !response.body) return null;
 
     // Stream-read with a hard byte cap to avoid loading huge payloads into memory.
@@ -119,6 +126,6 @@ export async function fetchImageAsBase64(imageUrl, options = {}) {
     return null;
   } finally {
     if (timeout) clearTimeout(timeout);
-    dispatcher.close().catch(() => {});
+    dispatcher?.close?.().catch?.(() => {});
   }
 }

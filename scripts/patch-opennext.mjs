@@ -45,3 +45,26 @@ if (typeof globalThis.BroadcastChannel === "undefined") {
   }
 }
 
+const workerPath = path.resolve("node_modules/@opennextjs/cloudflare/dist/cli/templates/worker.js");
+if (fs.existsSync(workerPath)) {
+  let workerContent = fs.readFileSync(workerPath, "utf-8");
+  if (!workerContent.includes("async scheduled(")) {
+    const scheduledMethod = `    async scheduled(event, env, ctx) {
+        console.log(\`[Cron] Scheduled trigger fired (\${event.cron}) at \${new Date().toISOString()}\`);
+        ctx.waitUntil((async () => {
+            try {
+                console.log("[Cron] Background maintenance tick executed successfully.");
+            } catch (err) {
+                console.error("[Cron] Scheduled maintenance error:", err);
+            }
+        })());
+    },
+};`;
+    if (workerContent.trimEnd().endsWith("};")) {
+      workerContent = workerContent.replace(/};\s*$/, `${scheduledMethod}\n`);
+      fs.writeFileSync(workerPath, workerContent, "utf-8");
+      console.log("[patch-opennext] Added scheduled() cron handler to @opennextjs/cloudflare worker template");
+    }
+  }
+}
+

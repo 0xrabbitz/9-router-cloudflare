@@ -1,4 +1,5 @@
-import { saveRequestUsage, appendRequestLog, saveRequestDetail, runBackground } from "@/lib/usageDb.js";
+import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
+import { runBackground } from "@/lib/background.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
 

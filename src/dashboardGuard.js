@@ -35,7 +35,7 @@ const PUBLIC_API_PATHS = [
 
 // Public top-level prefixes (LLM API endpoints with their own API key auth).
 // Keep root-level rewrites here too: middleware runs before Next.js rewrites.
-const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses"];
+const PUBLIC_PREFIXES = ["/v1", "/v1beta", "/api/v1", "/api/v1beta", "/codex", "/responses", "/systemone"];
 
 // Always require JWT token regardless of requireLogin setting
 const ALWAYS_PROTECTED = [
@@ -43,9 +43,13 @@ const ALWAYS_PROTECTED = [
   "/api/settings/database",
   "/api/version/shutdown",
   "/api/version/update",
+  "/api/oauth/commandcode/auto-import",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
+  "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -80,9 +84,13 @@ const LOCAL_ONLY_PATHS = [
   "/api/tunnel/tailscale-check",
   "/api/tunnel/enable",
   "/api/tunnel/disable",
+  "/api/oauth/commandcode/auto-import",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
+  "/api/oauth/xiaomi-mimo/auto-import",
   "/api/oauth/zed/auto-import",
+  "/api/oauth/minimax-code/lease",
+  "/api/oauth/minimax-code-global/lease",
   "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",

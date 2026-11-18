@@ -212,7 +212,7 @@ export async function createProviderConnection(data) {
       }
       const normalized = resetHealthStateOnActivation(existing, data);
       const merged = { ...existing, ...normalized, updatedAt: now };
-      upsert(db, merged);
+      await upsert(db, merged);
       result = merged;
       return;
     }
@@ -270,7 +270,7 @@ export async function updateProviderConnection(id, data) {
     const existing = rowToConn(row);
     const normalized = resetHealthStateOnActivation(existing, data);
     const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
-    upsert(db, merged);
+    await upsert(db, merged);
     if (data.priority !== undefined) await reorderInTx(db, existing.provider);
     result = merged;
   });
