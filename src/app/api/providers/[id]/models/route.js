@@ -16,6 +16,12 @@ import { resolveClineModels, resolveClinepassModels } from "open-sse/services/cl
 import { NOUS_MODELS_URL, normalizeNousModels } from "open-sse/services/nous.js";
 import { resolveCommandCodeModels } from "open-sse/services/commandcodeModels.js";
 import codexProvider from "open-sse/providers/registry/codex.js";
+import {
+  ANTIGRAVITY_IDE_BASE_URL,
+  ANTIGRAVITY_IDE_USER_AGENT,
+  ANTIGRAVITY_IDE_VERSION,
+  ANTIGRAVITY_OAUTH_CLIENT,
+} from "open-sse/providers/shared.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -226,13 +232,37 @@ const PROVIDER_MODELS_CONFIG = {
     })
   },
   antigravity: {
-    url: "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:models",
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    body: {},
-    parseResponse: (data) => data.models || []
+    // Live per-account catalog via fetchAvailableModels + OAuth refresh-on-401/403.
+    // Requires the Hub client fingerprint headers, otherwise Google returns 403.
+    customResolver: buildOAuthResolver({
+      refreshFn: (conn) => refreshGoogleToken(
+        conn.refreshToken,
+        ANTIGRAVITY_OAUTH_CLIENT.clientId,
+        ANTIGRAVITY_OAUTH_CLIENT.clientSecret
+      ),
+      fetchFn: (token) => fetch(`${ANTIGRAVITY_IDE_BASE_URL}/v1internal:fetchAvailableModels`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
+          "X-Client-Name": "antigravity",
+          "X-Client-Version": ANTIGRAVITY_IDE_VERSION,
+        },
+        body: JSON.stringify({}),
+      }),
+      parseFn: (data) => Object.entries(data?.models || {})
+        .filter(([id, info]) => !info?.isInternal && !id.includes("-disabled") && !id.startsWith("tab_"))
+        .map(([id, info]) => ({
+          id,
+          name: info?.displayName || id,
+          contextLength: info?.maxTokens,
+          maxOutputTokens: info?.maxOutputTokens,
+          isVL: !!info?.supportsImages,
+          isReasoning: !!info?.supportsThinking,
+        })),
+      errorLabel: "Failed to fetch Antigravity models",
+    }),
   },
   github: {
     url: "https://api.githubcopilot.com/models",

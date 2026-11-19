@@ -3,8 +3,68 @@ import { resolveProviderId } from "@/shared/constants/providers.js";
 import { unwrapClineEnvelope } from "open-sse/shared/clineEnvelope.js";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { isCloudflareWorker } from "open-sse/utils/runtimeEnv.js";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
+const INTERNAL_TIMEOUT_MS = 15000;
+
+async function withTimeout(promise, timeoutMs = INTERNAL_TIMEOUT_MS) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Request timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function dispatchInternalPost(path, headers, body, baseUrl) {
+  // Cloudflare Workers cannot loop back to 127.0.0.1 or self-fetch the same zone safely;
+  // invoke the corresponding v1 handler in-process when running in workerd.
+  if (!isCloudflareWorker()) {
+    return fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(INTERNAL_TIMEOUT_MS),
+    });
+  }
+
+  const request = new Request(`https://internal.local${path}`, {
+    method: "POST",
+    headers,
+    body,
+  });
+
+  switch (path) {
+    case "/api/v1/embeddings": {
+      const { handleEmbeddings } = await import("@/sse/handlers/embeddings.js");
+      return withTimeout(handleEmbeddings(request));
+    }
+    case "/api/v1/images/generations": {
+      const { handleImageGeneration } = await import("@/sse/handlers/imageGeneration.js");
+      return withTimeout(handleImageGeneration(request));
+    }
+    case "/api/v1/audio/transcriptions": {
+      const { handleStt } = await import("@/sse/handlers/stt.js");
+      return withTimeout(handleStt(request));
+    }
+    case "/api/v1/systemone": {
+      const { handleSystemone } = await import("@/sse/handlers/systemone.js");
+      return withTimeout(handleSystemone(request));
+    }
+    default: {
+      const { initTranslators } = await import("open-sse/translator/index.js");
+      await initTranslators();
+      const { handleChat } = await import("@/sse/handlers/chat.js");
+      return withTimeout(handleChat(request));
+    }
+  }
+}
 
 function createSilentWavFile() {
   const sampleRate = 16000;
@@ -60,12 +120,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
   const start = Date.now();
 
   if (kind === "embedding") {
-    const res = await fetch(`${baseUrl}/api/v1/embeddings`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ model, input: "test" }),
-      signal: AbortSignal.timeout(15000),
-    });
+    const res = await dispatchInternalPost("/api/v1/embeddings", headers, JSON.stringify({ model, input: "test" }), baseUrl);
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");
     let parsed = null;
@@ -83,12 +138,7 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
   }
 
   if (kind === "image") {
-    const res = await fetch(`${baseUrl}/api/v1/images/generations`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ model, prompt: "test" }),
-      signal: AbortSignal.timeout(15000),
-    });
+    const res = await dispatchInternalPost("/api/v1/images/generations", headers, JSON.stringify({ model, prompt: "test" }), baseUrl);
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");
     let parsed = null;
@@ -112,12 +162,8 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     form.append("file", sampleAudio, "test.wav");
     form.append("model", model);
 
-    const res = await fetch(`${baseUrl}/api/v1/audio/transcriptions`, {
-      method: "POST",
-      headers: Object.fromEntries(Object.entries(headers).filter(([key]) => key.toLowerCase() !== "content-type")),
-      body: form,
-      signal: AbortSignal.timeout(15000),
-    });
+    const sttHeaders = Object.fromEntries(Object.entries(headers).filter(([key]) => key.toLowerCase() !== "content-type"));
+    const res = await dispatchInternalPost("/api/v1/audio/transcriptions", sttHeaders, form, baseUrl);
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");
     let parsed = null;
@@ -136,18 +182,18 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
   }
 
   if (kind === "systemone") {
-    const res = await fetch(`${baseUrl}/api/v1/systemone`, {
-      method: "POST",
+    const res = await dispatchInternalPost(
+      "/api/v1/systemone",
       headers,
-      body: JSON.stringify({
+      JSON.stringify({
         model,
         state: "Customer: I was charged twice for my order this morning.",
         questions: {
           probe: { type: "noul", instructions: "Is the customer reporting a billing problem?" },
         },
       }),
-      signal: AbortSignal.timeout(15000),
-    });
+      baseUrl
+    );
     const latencyMs = Date.now() - start;
     const rawText = await res.text().catch(() => "");
     let parsed = null;
@@ -165,10 +211,10 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     return { ok: true, latencyMs, error: null, status: res.status };
   }
 
-  const res = await fetch(`${baseUrl}/api/v1/chat/completions`, {
-    method: "POST",
+  const res = await dispatchInternalPost(
+    "/api/v1/chat/completions",
     headers,
-    body: JSON.stringify({
+    JSON.stringify({
       model,
       // 1024 tokens: reasoning models (ClinePass/kimi-k3, deepseek-v4-pro, etc.) spend
       // their budget on chain-of-thought before emitting an answer. A tiny probe like
@@ -178,8 +224,8 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),
-    signal: AbortSignal.timeout(15000),
-  });
+    baseUrl
+  );
   const latencyMs = Date.now() - start;
 
   const rawText = await res.text().catch(() => "");
