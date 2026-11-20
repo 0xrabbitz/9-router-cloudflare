@@ -56,4 +56,20 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(result.shouldFallback).toBe(true);
     expect(result.cooldownMs).toBeGreaterThan(0);
   });
+
+  it("assigns 30m modelScoped cooldown for Antigravity 404 Requested entity was not found", () => {
+    const textMatch = checkFallbackError(404, "Requested entity was not found.", 0, "antigravity");
+    expect(textMatch).toEqual({
+      shouldFallback: true,
+      cooldownMs: 30 * 60 * 1000,
+      modelScoped: true,
+    });
+
+    const statusMatch = checkFallbackError(404, "Model unavailable", 0, "antigravity");
+    expect(statusMatch).toEqual({
+      shouldFallback: true,
+      cooldownMs: 30 * 60 * 1000,
+      modelScoped: true,
+    });
+  });
 });

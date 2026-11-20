@@ -30,6 +30,22 @@ import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../s
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
 /**
+ * Route-level POST wrapper preventing unhandled rejections from crashing edge/CF isolates (error 1101).
+ */
+export async function handleV1ChatPost(request, ensureInitializedFn = null, routeLabel = "/v1") {
+  try {
+    if (ensureInitializedFn) await ensureInitializedFn();
+    return await handleChat(request);
+  } catch (error) {
+    console.error(`[API ${routeLabel}] Unhandled error:`, error?.stack || error);
+    return errorResponse(
+      HTTP_STATUS.SERVER_ERROR,
+      error?.message || "Internal server error"
+    );
+  }
+}
+
+/**
  * Handle chat completion request
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
@@ -127,7 +143,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, settings);
         },
         log,
         comboName: modelStr,
@@ -143,7 +159,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, settings),
         adapterAdded
       ),
       log,
@@ -175,7 +191,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, settings),
         adapterAdded
       ),
       log,
@@ -184,20 +200,20 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, contextMarker ? `${modelStr.slice(modelStr.indexOf("/") + 1)}[${contextMarker}]` : null, settings);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, settings = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
-      const chatSettings = await getSettings();
+      const chatSettings = settings || await getSettings();
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
@@ -220,7 +236,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, chatSettings);
           },
           log,
           comboName: modelStr,
@@ -238,7 +254,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, chatSettings),
           adapterAdded
         ),
         log,
@@ -269,6 +285,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
+  const chatSettings = settings || await getSettings();
 
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
@@ -277,7 +294,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastHeaders = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+    if (request?.signal?.aborted) {
+      log.warn("CHAT", `Client aborted request for ${provider}/${model}`);
+      return errorResponse(499, "Client closed request");
+    }
+
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      requestedModel: requestedModel || model,
+      settings: chatSettings,
+    });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -309,13 +334,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Use shared chatCore
-    const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
+      signal: request?.signal || null,
       clientRawRequest,
       connectionId: credentials.connectionId,
       userAgent,
@@ -359,22 +384,40 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     if (result.success) return result.response;
 
+    if (result.status === 499 || request?.signal?.aborted) {
+      return result.response;
+    }
+
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
     let resetsAtMs = result.resetsAtMs;
     if (provider === "antigravity" && (result.status === 409 || result.status === 429)) {
-      quotaResetMs = await handleAntigravityQuotaError(
-        credentials.connectionId, result.status, model,
-        refreshedCredentials.accessToken, credentials.providerSpecificData
-      );
-      if (quotaResetMs) resetsAtMs = quotaResetMs;
+      try {
+        quotaResetMs = await handleAntigravityQuotaError(
+          credentials.connectionId, result.status, model,
+          refreshedCredentials.accessToken, credentials.providerSpecificData
+        );
+        if (quotaResetMs) resetsAtMs = quotaResetMs;
+      } catch (quotaErr) {
+        log.warn("AG_QUOTA", `Quota probe error: ${quotaErr?.message || quotaErr}`);
+      }
     }
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.
     // Do not persist a modelLock_* for this path.
-    const shouldFallback = provider === "antigravity" && quotaResetMs
-      ? true
-      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+    let shouldFallback = false;
+    if (provider === "antigravity" && quotaResetMs) {
+      shouldFallback = true;
+    } else {
+      try {
+        shouldFallback = (await markAccountUnavailable(
+          credentials.connectionId, result.status, result.error, provider, model, resetsAtMs
+        )).shouldFallback;
+      } catch (lockErr) {
+        log.warn("AUTH", `markAccountUnavailable failed (${credentials.connectionId}): ${lockErr?.message || lockErr}`);
+        shouldFallback = result.status >= 500 || result.status === 404 || result.status === 429;
+      }
+    }
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);

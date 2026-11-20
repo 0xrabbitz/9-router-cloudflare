@@ -2,6 +2,14 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+const PROXY_POOL_CACHE_TTL_MS = 5000;
+let _poolCache = { db: null, entries: new Map() };
+
+export function invalidateProxyPoolsCache(id = null) {
+  if (id) _poolCache.entries.delete(id);
+  else _poolCache.entries.clear();
+}
+
 function rowToPool(row) {
   if (!row) return null;
   const extra = parseJson(row.data, {});
@@ -53,9 +61,22 @@ export async function getProxyPools(filter = {}) {
 }
 
 export async function getProxyPoolById(id) {
+  if (!id) return null;
   const db = await getAdapter();
+  const now = Date.now();
+  if (_poolCache.db === db) {
+    const cached = _poolCache.entries.get(id);
+    if (cached && (now - cached.ts) < PROXY_POOL_CACHE_TTL_MS) {
+      return cached.pool ? { ...cached.pool } : null;
+    }
+  } else {
+    _poolCache = { db, entries: new Map() };
+  }
   const row = await db.get(`SELECT * FROM proxyPools WHERE id = ?`, [id]);
-  return rowToPool(row);
+  const pool = rowToPool(row);
+  if (_poolCache.entries.size >= 128) _poolCache.entries.clear();
+  _poolCache.entries.set(id, { pool, ts: now });
+  return pool ? { ...pool } : null;
 }
 
 export async function createProxyPool(data) {
@@ -76,6 +97,7 @@ export async function createProxyPool(data) {
     updatedAt: now,
   };
   await upsert(db, pool);
+  invalidateProxyPoolsCache(pool.id);
   return pool;
 }
 
@@ -89,6 +111,7 @@ export async function updateProxyPool(id, data) {
     await upsert(db, merged);
     result = merged;
   });
+  invalidateProxyPoolsCache(id);
   return result;
 }
 
@@ -101,5 +124,6 @@ export async function deleteProxyPool(id) {
     removed = rowToPool(row);
     await db.run(`DELETE FROM proxyPools WHERE id = ?`, [id]);
   });
+  invalidateProxyPoolsCache(id);
   return removed;
 }

@@ -17,7 +17,7 @@
     "build:bun": "bun --bun next build --webpack",
     "start:bun": "bun ./.next/standalone/custom-server.js",
     "postinstall": "node scripts/patch-opennext.mjs",
-    "build:cf": "node scripts/patch-opennext.mjs && opennextjs-cloudflare build",
+    "build:cf": "node scripts/patch-opennext.mjs && SKIP_UNDICI_TRACE=1 opennextjs-cloudflare build",
     "deploy:cf": "npm run build:cf && wrangler deploy",
     "cli:pack": "npm --prefix cli run pack:cli",
     "cli:publish": "npm --prefix cli run publish:cli"

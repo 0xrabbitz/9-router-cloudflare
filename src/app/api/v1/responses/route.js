@@ -1,4 +1,4 @@
-import { handleChat } from "@/sse/handlers/chat.js";
+import { handleV1ChatPost } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
 
 let initialized = false;
@@ -25,6 +25,5 @@ export async function OPTIONS() {
  * Now handled by translator pattern (openai-responses format auto-detected)
  */
 export async function POST(request) {
-  await ensureInitialized();
-  return await handleChat(request);
+  return await handleV1ChatPost(request, ensureInitialized, "/v1/responses");
 }

@@ -11,7 +11,7 @@ import { extractReasoningText } from "../../translator/concerns/reasoning.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
-import { saveRequestDetail, appendRequestLog } from "@/lib/usageDb.js";
+import * as usageDb from "@/lib/usageDb.js";
 
 function textFromResponsesMessageItem(item) {
   if (!item?.content || !Array.isArray(item.content)) return "";
@@ -186,18 +186,20 @@ export function parseSSEToOpenAIResponse(rawSSE, fallbackModel) {
  * Handle case: provider forced streaming but client wants JSON.
  * Supports both Codex/Responses API SSE and standard Chat Completions SSE.
  */
-export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, reqTag, log }) {
+export async function handleForcedSSEToJson({ providerResponse, sourceFormat, targetFormat, provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, customToolNames, toolNameMap, trackDone, appendLog, reqTag, log, observabilityEnabled = true }) {
   const contentType = providerResponse.headers.get("content-type") || "";
   const isSSE = contentType.includes("text/event-stream") || (contentType === "" && isResponsesProvider(provider));
   if (!isSSE) return null; // not handled here
 
   trackDone();
 
-  const ctx = {
-    provider, model, connectionId,
-    request: extractRequestConfig(body, stream),
-    providerRequest: finalBody || translatedBody || null
-  };
+  const ctx = observabilityEnabled
+    ? {
+        provider, model, connectionId,
+        request: extractRequestConfig(body, stream),
+        providerRequest: finalBody || translatedBody || null
+      }
+    : null;
 
   // Codex/Responses API SSE path
   // Branch on the UPSTREAM format (targetFormat = format we spoke to the provider in),
@@ -219,16 +221,18 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
       const inTokensForLog = (usage.input_tokens || 0)
         + (usage.cache_read_input_tokens || usage.cached_tokens || 0)
         + (usage.cache_creation_input_tokens || 0);
-      const { msgItem, textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
-      const totalLatency = Date.now() - requestStartTime;
+      const { textContent } = pickAssistantMessageForChatCompletion(jsonResponse.output);
+      if (observabilityEnabled && ctx) {
+        const totalLatency = Date.now() - requestStartTime;
 
-      saveRequestDetail(buildRequestDetail({
-        ...ctx,
-        latency: { ttft: totalLatency, total: totalLatency },
-        tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
-        response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
-        status: "success"
-      }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
+        usageDb.saveRequestDetail?.(buildRequestDetail({
+          ...ctx,
+          latency: { ttft: totalLatency, total: totalLatency },
+          tokens: { prompt_tokens: inTokensForLog, completion_tokens: usage.output_tokens || 0 },
+          response: { content: textContent, thinking: null, finish_reason: jsonResponse.status || "unknown" },
+          status: "success"
+        }, { endpoint: clientRawRequest?.endpoint || null }))?.catch?.(() => {});
+      }
 
       // Client is Responses API → return as-is
       if (sourceFormat === FORMATS.OPENAI_RESPONSES) {
@@ -326,18 +330,20 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
-    const totalLatency = Date.now() - requestStartTime;
-    saveRequestDetail(buildRequestDetail({
-      ...ctx,
-      latency: { ttft: totalLatency, total: totalLatency },
-      tokens: usage,
-      response: {
-        content: parsed.choices?.[0]?.message?.content || null,
-        thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
-        finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
-      },
-      status: "success"
-    }, { endpoint: clientRawRequest?.endpoint || null })).catch(() => {});
+    if (observabilityEnabled && ctx) {
+      const totalLatency = Date.now() - requestStartTime;
+      usageDb.saveRequestDetail?.(buildRequestDetail({
+        ...ctx,
+        latency: { ttft: totalLatency, total: totalLatency },
+        tokens: usage,
+        response: {
+          content: parsed.choices?.[0]?.message?.content || null,
+          thinking: parsed.choices?.[0]?.message?.reasoning_content || null,
+          finish_reason: parsed.choices?.[0]?.finish_reason || "unknown"
+        },
+        status: "success"
+      }, { endpoint: clientRawRequest?.endpoint || null }))?.catch?.(() => {});
+    }
 
     // Re-attach usage explicitly. This handler already HAS the correct usage — it is
     // the same object written to the usage DB, and for a cached Claude request that DB

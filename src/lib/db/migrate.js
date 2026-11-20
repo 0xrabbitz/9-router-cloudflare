@@ -213,18 +213,64 @@ function importLegacyDetails(adapter, data) {
 }
 
 // ─── Cloudflare D1 Schema Initializer ────────────────────────────────────
-async function initD1Schema(adapter) {
-  for (const [tableName, def] of Object.entries(TABLES)) {
-    try {
-      await adapter.exec(buildCreateTableSql(tableName, def));
-      if (def.indexes) {
-        for (const idx of def.indexes) {
-          try { await adapter.exec(idx); } catch {}
-        }
-      }
-    } catch (e) {
-      console.warn(`[DB][D1] table ${tableName} init:`, e.message);
+const D1_SCHEMA_SIG = `v${SCHEMA_VERSION}:${Object.keys(TABLES).length}:${Object.values(TABLES).reduce(
+  (sum, def) => sum + Object.keys(def.columns).length + (def.indexes?.length || 0),
+  0
+)}`;
+
+async function execD1BatchWithFallback(adapter, statements, label) {
+  if (!statements.length) return;
+  try {
+    if (typeof adapter.raw?.exec === "function") {
+      await adapter.raw.exec(statements.join(";\n"));
+      return;
     }
+    await adapter.exec(statements.join(";\n"));
+    return;
+  } catch (e) {
+    console.warn(`[DB][D1] batch ${label} init fallback:`, e.message);
+  }
+  for (const stmt of statements) {
+    try {
+      await adapter.exec(stmt);
+    } catch (e) {
+      console.warn(`[DB][D1] ${label} ${stmt.slice(0, 48)} init:`, e.message);
+    }
+  }
+}
+
+async function initD1Schema(adapter) {
+  const tableNames = Object.keys(TABLES);
+  try {
+    const placeholders = tableNames.map(() => "?").join(",");
+    const probe = await adapter.get(
+      `SELECT (SELECT value FROM _meta WHERE key = 'd1SchemaSig') AS sig, (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})) AS cnt`,
+      tableNames
+    );
+    if (probe?.sig === D1_SCHEMA_SIG && (probe?.cnt ?? 0) === tableNames.length) {
+      return;
+    }
+  } catch {
+    // Fresh D1 database without _meta table — run full schema initialization below.
+  }
+
+  const tableStatements = [];
+  const indexStatements = [];
+  for (const [tableName, def] of Object.entries(TABLES)) {
+    tableStatements.push(buildCreateTableSql(tableName, def));
+    if (def.indexes?.length) indexStatements.push(...def.indexes);
+  }
+
+  await execD1BatchWithFallback(adapter, tableStatements, "tables");
+  await execD1BatchWithFallback(adapter, indexStatements, "indexes");
+
+  try {
+    await adapter.run(
+      `INSERT INTO _meta(key, value) VALUES('d1SchemaSig', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [D1_SCHEMA_SIG]
+    );
+  } catch (e) {
+    console.warn("[DB][D1] schema sig stamp:", e.message);
   }
 }
 

@@ -4,6 +4,20 @@ import { proxyAwareFetch } from "../../utils/proxyFetch.js";
 import { dedupRefresh } from "./dedup.js";
 import { buildExternalIdpRefreshParams } from "../../../src/lib/oauth/kiroExternalIdp.js";
 
+const OAUTH_FETCH_TIMEOUT_MS = 10_000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = OAUTH_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`OAuth token refresh timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let _xaiServiceSingleton = null;
 export async function refreshXaiToken(refreshToken, log) {
   if (!refreshToken) return null;
@@ -107,7 +121,7 @@ export async function refreshAccessToken(provider, refreshToken, credentials, lo
       Accept: "application/json",
       ...(profile.extraHeaders ? (profile.extraHeaders(credentials, config) || {}) : {}),
     };
-    const response = await fetch(url, { method: "POST", headers, body });
+    const response = await fetchWithTimeout(url, { method: "POST", headers, body });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -152,7 +166,7 @@ export async function refreshClineToken(refreshToken, log) {
 
   return dedupRefresh("cline", refreshToken, async () => {
     try {
-      const response = await fetch(PROVIDERS.cline?.refreshUrl, {
+      const response = await fetchWithTimeout(PROVIDERS.cline?.refreshUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -203,7 +217,7 @@ export async function refreshGoogleToken(refreshToken, clientId, clientSecret, l
   if (!refreshToken) return null;
   return dedupRefresh(`google:${clientId}`, refreshToken, async () => {
   try {
-    const response = await fetch(OAUTH_ENDPOINTS.google.token, {
+    const response = await fetchWithTimeout(OAUTH_ENDPOINTS.google.token, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -258,7 +272,7 @@ export async function refreshCodexToken(refreshToken, log) {
   if (!refreshToken) return null;
   return dedupRefresh("codex", refreshToken, async () => {
     try {
-      const response = await fetch(OAUTH_ENDPOINTS.openai.token, {
+      const response = await fetchWithTimeout(OAUTH_ENDPOINTS.openai.token, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

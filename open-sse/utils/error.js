@@ -115,8 +115,11 @@ export function createErrorResult(statusCode, message, resetsAtMs, extraHeaders 
  * @returns {Response}
  */
 export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman, extraHeaders = null) {
-  const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
-  const msg = `${message} (${retryAfterHuman})`;
+  const retryAfterMs = retryAfter ? new Date(retryAfter).getTime() : NaN;
+  const retryAfterSec = Number.isFinite(retryAfterMs)
+    ? Math.max(Math.ceil((retryAfterMs - Date.now()) / 1000), 1)
+    : 60;
+  const msg = retryAfterHuman ? `${message} (${retryAfterHuman})` : String(message || "Unavailable");
   return new Response(
     JSON.stringify({ error: { message: msg } }),
     {

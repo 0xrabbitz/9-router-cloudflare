@@ -141,6 +141,20 @@ async function flushToDatabase() {
   }
 }
 
+export function invalidateObservabilityConfigCache() {
+  cachedConfig = null;
+  cachedConfigTs = 0;
+}
+
+if (typeof globalThis !== "undefined") {
+  globalThis.__9rInvalidateObsConfig = invalidateObservabilityConfigCache;
+}
+
+export async function isObservabilityEnabled() {
+  const config = await getObservabilityConfig();
+  return config.enabled === true;
+}
+
 export async function saveRequestDetail(detail) {
   const config = await getObservabilityConfig();
   if (!config.enabled) {return;}
@@ -155,11 +169,14 @@ export async function saveRequestDetail(detail) {
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     const p = flushToDatabase().catch((e) => console.error("[requestDetailsRepo] flush err:", e));
     runBackground(p);
-  } else if (!flushTimer) {
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      flushToDatabase().catch(() => {});
-    }, config.flushIntervalMs);
+  } else {
+    ensureShutdownHandler();
+    if (!flushTimer) {
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushToDatabase().catch(() => {});
+      }, config.flushIntervalMs);
+    }
   }
 }
 
@@ -213,7 +230,17 @@ const _shutdownHandler = async () => {
   if (writeBuffer.length > 0) await flushToDatabase();
 };
 
+let shutdownHandlerRegistered = false;
+
 function ensureShutdownHandler() {
+  if (shutdownHandlerRegistered) return;
+  if (typeof process === "undefined" || typeof process.on !== "function" || typeof process.off !== "function") {
+    return;
+  }
+  if (typeof globalThis !== "undefined" && (!!globalThis[Symbol.for("__cloudflare-context__")] || !!globalThis.__D1_ADAPTER)) {
+    return;
+  }
+  shutdownHandlerRegistered = true;
   process.off("beforeExit", _shutdownHandler);
   process.off("SIGINT", _shutdownHandler);
   process.off("SIGTERM", _shutdownHandler);
@@ -224,5 +251,3 @@ function ensureShutdownHandler() {
   process.on("SIGTERM", _shutdownHandler);
   process.on("exit", _shutdownHandler);
 }
-
-ensureShutdownHandler();

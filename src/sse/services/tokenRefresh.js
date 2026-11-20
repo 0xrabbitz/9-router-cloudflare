@@ -227,6 +227,7 @@ export async function updateProviderCredentials(connectionId, newCredentials) {
  * @returns {Promise<object>} updated credentials object
  */
 export async function checkAndRefreshToken(provider, credentials, options = {}) {
+  const fetchedRecently = Number.isFinite(credentials?._fetchedAt) && (Date.now() - credentials._fetchedAt) < 2000;
   let creds = { ...credentials };
   if (!creds.connectionId && creds.id) {
     creds.connectionId = creds.id;
@@ -234,7 +235,7 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
 
   // Adopt latest DB tokens: OpenAI rotates the refresh token on every refresh, and
   // refreshing with a stale snapshot (reuse) revokes the whole session → account logout.
-  if (creds.connectionId) {
+  if (creds.connectionId && !fetchedRecently) {
     const latest = await getProviderConnectionById(creds.connectionId).catch(() => null);
     const latestRefreshMs = Date.parse(latest?.lastRefreshAt || "");
     const credsRefreshMs = Date.parse(creds.lastRefreshAt || "");

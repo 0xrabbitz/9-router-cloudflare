@@ -36,69 +36,71 @@ import { DefaultExecutor } from "./default.js";
 import { MinimaxCodeExecutor } from "./minimax-code.js";
 import { DevinCliExecutor } from "./devin-cli.js";
 
-const executors = {
-  antigravity: new AntigravityExecutor(),
-  azure: new AzureExecutor(),
-  "gemini-cli": new GeminiCLIExecutor(),
-  github: new GithubExecutor(),
-  iflow: new IFlowExecutor(),
-  qoder: new QoderExecutor(),
-  "qoder-cn": new QoderExecutor("qoder-cn"),
-  kiro: new KiroExecutor(),
-  kimchi: new KimchiExecutor(),
-  codex: new CodexExecutor(),
-  cursor: new CursorExecutor(),
-  cu: new CursorExecutor(), // Alias for cursor
-  vertex: new VertexExecutor("vertex"),
-  "vertex-partner": new VertexExecutor("vertex-partner"),
-  opencode: new OpenCodeExecutor(),
-  "opencode-go": new OpenCodeGoExecutor(),
-  "opencode-zen": new OpenCodeZenExecutor(),
-  "grok-web": new GrokWebExecutor(),
-  "grok-cli": new GrokCliExecutor(),
-  gcli: new GrokCliExecutor(), // Alias
-  gb: new GrokCliExecutor(), // Alias (Grok Build)
-  "perplexity-web": new PerplexityWebExecutor(),
-  "deepseek-web": new DeepSeekWebExecutor(),
-  "gemini-web": new GeminiWebExecutor(),
-  "muse-web": new MuseWebExecutor(),
-  "veoaifree-web": new VeoAiFreeWebExecutor(),
-  "veo-free": new VeoAiFreeWebExecutor(), // Alias
-  "uc-web": new UcWebExecutor(),
-  "chatgpt-web": new ChatGptWebExecutor(),
-  "ollama-local": new OllamaLocalExecutor(),
-  commandcode: new CommandCodeExecutor(),
-  "xiaomi-tokenplan": new XiaomiTokenplanExecutor(),
-  "xiaomi-mimo": new XiaomiMimoExecutor(),
-  "mimo-free": new MimoFreeExecutor(),
-  mmf: new MimoFreeExecutor(), // Alias for mimo-free
-  "codebuddy-cn": new CodeBuddyExecutor(),
-  "codebuddy-intl": new CodeBuddyIntlExecutor(),
-  trae: new TraeExecutor(),
-  zed: new ZedExecutor(),
-  windsurf: new WindsurfExecutor(),
-  "minimax-code": new MinimaxCodeExecutor("minimax-code"),
-  "minimax-code-global": new MinimaxCodeExecutor("minimax-code-global"),
-  "devin-cli": new DevinCliExecutor(),
-  bedrock: new BedrockExecutor(),
-  br: new BedrockExecutor(), // Alias for bedrock
+const EXECUTOR_FACTORIES = {
+  antigravity: () => new AntigravityExecutor(),
+  azure: () => new AzureExecutor(),
+  "gemini-cli": () => new GeminiCLIExecutor(),
+  github: () => new GithubExecutor(),
+  iflow: () => new IFlowExecutor(),
+  qoder: () => new QoderExecutor(),
+  "qoder-cn": () => new QoderExecutor("qoder-cn"),
+  kiro: () => new KiroExecutor(),
+  kimchi: () => new KimchiExecutor(),
+  codex: () => new CodexExecutor(),
+  cursor: () => new CursorExecutor(),
+  cu: () => new CursorExecutor(), // Alias for cursor
+  vertex: () => new VertexExecutor("vertex"),
+  "vertex-partner": () => new VertexExecutor("vertex-partner"),
+  opencode: () => new OpenCodeExecutor(),
+  "opencode-go": () => new OpenCodeGoExecutor(),
+  "opencode-zen": () => new OpenCodeZenExecutor(),
+  "grok-web": () => new GrokWebExecutor(),
+  "grok-cli": () => new GrokCliExecutor(),
+  gcli: () => new GrokCliExecutor(), // Alias
+  gb: () => new GrokCliExecutor(), // Alias (Grok Build)
+  "perplexity-web": () => new PerplexityWebExecutor(),
+  "deepseek-web": () => new DeepSeekWebExecutor(),
+  "gemini-web": () => new GeminiWebExecutor(),
+  "muse-web": () => new MuseWebExecutor(),
+  "veoaifree-web": () => new VeoAiFreeWebExecutor(),
+  "veo-free": () => new VeoAiFreeWebExecutor(), // Alias
+  "uc-web": () => new UcWebExecutor(),
+  "chatgpt-web": () => new ChatGptWebExecutor(),
+  "ollama-local": () => new OllamaLocalExecutor(),
+  commandcode: () => new CommandCodeExecutor(),
+  "xiaomi-tokenplan": () => new XiaomiTokenplanExecutor(),
+  "xiaomi-mimo": () => new XiaomiMimoExecutor(),
+  "mimo-free": () => new MimoFreeExecutor(),
+  mmf: () => new MimoFreeExecutor(), // Alias for mimo-free
+  "codebuddy-cn": () => new CodeBuddyExecutor(),
+  "codebuddy-intl": () => new CodeBuddyIntlExecutor(),
+  trae: () => new TraeExecutor(),
+  zed: () => new ZedExecutor(),
+  windsurf: () => new WindsurfExecutor(),
+  "minimax-code": () => new MinimaxCodeExecutor("minimax-code"),
+  "minimax-code-global": () => new MinimaxCodeExecutor("minimax-code-global"),
+  "devin-cli": () => new DevinCliExecutor(),
+  bedrock: () => new BedrockExecutor(),
+  br: () => new BedrockExecutor(), // Alias for bedrock
   // Second Bedrock entry for xAI's Grok, which speaks OpenAI Chat Completions rather than the
   // Anthropic Messages format. Same executor, different registry transport format — the pattern
   // vertex / vertex-partner already uses.
-  "bedrock-xai": new BedrockExecutor("bedrock-xai"),
-  brx: new BedrockExecutor("bedrock-xai"), // Alias for bedrock-xai
+  "bedrock-xai": () => new BedrockExecutor("bedrock-xai"),
+  brx: () => new BedrockExecutor("bedrock-xai"), // Alias for bedrock-xai
 };
 
-const defaultCache = new Map();
+const executorCache = new Map();
 
 export function getExecutor(provider) {
-  if (executors[provider]) return executors[provider];
-  if (!defaultCache.has(provider)) defaultCache.set(provider, new DefaultExecutor(provider));
-  return defaultCache.get(provider);
+  if (executorCache.has(provider)) return executorCache.get(provider);
+  const factory = EXECUTOR_FACTORIES[provider];
+  const instance = factory ? factory() : new DefaultExecutor(provider);
+  executorCache.set(provider, instance);
+  return instance;
 }
 
 export function hasSpecializedExecutor(provider) {
-  return !!executors[provider];
+  return Object.prototype.hasOwnProperty.call(EXECUTOR_FACTORIES, provider);
 }
 
 export { BaseExecutor } from "./base.js";

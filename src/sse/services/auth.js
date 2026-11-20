@@ -11,6 +11,22 @@ let selectionMutex = Promise.resolve();
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
+function parseTimestampMs(value) {
+  if (!value) return NaN;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function attachFetchMeta(credentials) {
+  Object.defineProperty(credentials, "_fetchedAt", {
+    value: Date.now(),
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return credentials;
+}
+
 function githubMonthlyResetMs(status, errorText, provider) {
   if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
@@ -45,7 +61,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     // Inject a virtual connection for no-auth free providers (with optional proxy pool from settings)
     if (FREE_PROVIDERS[providerId]?.noAuth) {
-      const settings = await getSettings();
+      const settings = options?.settings || await getSettings();
       const override = (settings.providerStrategies || {})[providerId] || {};
       const strategy = override.rotateStrategy || "none";
       let pickedId = override.proxyPoolId || null;
@@ -124,7 +140,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           if (resetAt && new Date(resetAt).getTime() > Date.now()) expiries.push(resetAt);
         });
       }
-      const earliest = expiries.sort()[0] || null;
+      const earliest = expiries
+        .filter(ts => Number.isFinite(parseTimestampMs(ts)))
+        .sort((a, b) => parseTimestampMs(a) - parseTimestampMs(b))[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
         log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
@@ -140,7 +158,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       return null;
     }
 
-    const settings = await getSettings();
+    const settings = options?.settings || await getSettings();
     // Per-provider strategy overrides global setting
     const providerOverride = (settings.providerStrategies || {})[providerId] || {};
     const strategy = providerOverride.fallbackStrategy || settings.fallbackStrategy || "fill-first";
@@ -156,43 +174,52 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     if (connection) {
       // skip strategy
     } else if (strategy === "round-robin") {
-      const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
-
-      // Sort by lastUsed (most recent first) to find current candidate
-      const byRecency = [...availableConnections].sort((a, b) => {
-        if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-        if (!a.lastUsedAt) return 1;
-        if (!b.lastUsedAt) return -1;
-        return new Date(b.lastUsedAt) - new Date(a.lastUsedAt);
-      });
-
-      const current = byRecency[0];
-      const currentCount = current?.consecutiveUseCount || 0;
-
-      if (current && current.lastUsedAt && currentCount < stickyLimit) {
-        // Stay with current account
-        connection = current;
-        // Update lastUsedAt and increment count (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
-        });
+      if (availableConnections.length === 1) {
+        // Single available connection: avoid redundant D1 read+write on every request
+        connection = availableConnections[0];
       } else {
-        // Pick the least recently used (excluding current if possible)
-        const sortedByOldest = [...availableConnections].sort((a, b) => {
-          if (!a.lastUsedAt && !b.lastUsedAt) return (a.priority || 999) - (b.priority || 999);
-          if (!a.lastUsedAt) return -1;
-          if (!b.lastUsedAt) return 1;
-          return new Date(a.lastUsedAt) - new Date(b.lastUsedAt);
+        const stickyLimit = providerOverride.stickyRoundRobinLimit || settings.stickyRoundRobinLimit || 3;
+
+        // Sort by lastUsed (most recent first) to find current candidate
+        const byRecency = [...availableConnections].sort((a, b) => {
+          const aMs = parseTimestampMs(a.lastUsedAt);
+          const bMs = parseTimestampMs(b.lastUsedAt);
+          if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return (a.priority || 999) - (b.priority || 999);
+          if (!Number.isFinite(aMs)) return 1;
+          if (!Number.isFinite(bMs)) return -1;
+          return bMs - aMs;
         });
 
-        connection = sortedByOldest[0];
+        const current = byRecency[0];
+        const currentCount = current?.consecutiveUseCount || 0;
 
-        // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: 1
-        });
+        if (current && current.lastUsedAt && currentCount < stickyLimit) {
+          // Stay with current account
+          connection = current;
+          // Update lastUsedAt and increment count (await to ensure persistence)
+          await updateProviderConnection(connection.id, {
+            lastUsedAt: new Date().toISOString(),
+            consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1
+          });
+        } else {
+          // Pick the least recently used (excluding current if possible)
+          const sortedByOldest = [...availableConnections].sort((a, b) => {
+            const aMs = parseTimestampMs(a.lastUsedAt);
+            const bMs = parseTimestampMs(b.lastUsedAt);
+            if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return (a.priority || 999) - (b.priority || 999);
+            if (!Number.isFinite(aMs)) return -1;
+            if (!Number.isFinite(bMs)) return 1;
+            return aMs - bMs;
+          });
+
+          connection = sortedByOldest[0];
+
+          // Update lastUsedAt and reset count to 1 (await to ensure persistence)
+          await updateProviderConnection(connection.id, {
+            lastUsedAt: new Date().toISOString(),
+            consecutiveUseCount: 1
+          });
+        }
       }
     } else {
       // Default: fill-first (already sorted by priority in getProviderConnections)
@@ -201,7 +228,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
 
-    return {
+    return attachFetchMeta({
       authType: connection.authType,
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
@@ -228,7 +255,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       lastError: connection.lastError,
       // Pass full connection for clearAccountError to read modelLock_* keys
       _connection: connection
-    };
+    });
   } finally {
     if (resolveMutex) resolveMutex();
   }
@@ -254,7 +281,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel;
+  let shouldFallback, cooldownMs, newBackoffLevel, modelScoped = false;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
@@ -267,16 +294,17 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
+    ({ shouldFallback, cooldownMs, newBackoffLevel, modelScoped = false } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
   const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  const isSingleModelScoped = Boolean(modelScoped && model && !githubResetAtMs);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
-    testStatus: "unavailable",
+    ...(isSingleModelScoped ? {} : { testStatus: "unavailable" }),
     lastError: reason,
     errorCode: status,
     lastErrorAt: new Date().toISOString(),

@@ -15,7 +15,7 @@ function getTimeString() {
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "", signal: clientSignal = null } = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
@@ -30,6 +30,29 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     else console.log(`[${getTimeString()}] ${symbol} ${provider}/${model} · ${status} · ${duration}ms`);
   };
 
+  const cleanupClientSignal = () => {
+    if (clientSignal && typeof clientSignal.removeEventListener === "function") {
+      clientSignal.removeEventListener("abort", onClientAbort);
+    }
+  };
+
+  const onClientAbort = () => {
+    if (disconnected) return;
+    disconnected = true;
+    cleanupClientSignal();
+    dbg("CTRL", `${provider}/${model} | disconnect=client_aborted | dur=${Date.now() - startTime}ms`);
+    abortController.abort();
+    onDisconnect?.({ reason: "client_aborted", duration: Date.now() - startTime });
+  };
+
+  if (clientSignal) {
+    if (clientSignal.aborted) {
+      abortController.abort();
+    } else if (typeof clientSignal.addEventListener === "function") {
+      clientSignal.addEventListener("abort", onClientAbort, { once: true });
+    }
+  }
+
   return {
     signal: abortController.signal,
     startTime,
@@ -40,6 +63,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       disconnected = true;
+      cleanupClientSignal();
 
       // Debug-only: Responses API has no [DONE] sentinel, so codex/droid close the
       // socket on every completed request. "📊 done" is the authoritative outcome line.
@@ -57,6 +81,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleComplete: () => {
       if (disconnected) return;
       disconnected = true;
+      cleanupClientSignal();
 
       if (abortTimeout) {
         clearTimeout(abortTimeout);
@@ -68,6 +93,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
     handleError: (error) => {
       if (disconnected) return;
       disconnected = true;
+      cleanupClientSignal();
 
       if (abortTimeout) {
         clearTimeout(abortTimeout);
@@ -83,7 +109,12 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       onError?.(error);
     },
 
-    abort: () => abortController.abort()
+    abort: () => {
+      cleanupClientSignal();
+      abortController.abort();
+    },
+
+    cleanup: cleanupClientSignal
   };
 }
 

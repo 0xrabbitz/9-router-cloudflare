@@ -58,6 +58,9 @@ const COOLDOWN = {
  */
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
+  // Antigravity: accounts missing a model (e.g. gemini-4-hydrogen-*) return 404 "Requested entity was not found."
+  // Lock only that model for 30m so round-robin doesn't retry it every 2m while keeping working models active.
+  { provider: "antigravity", text: "requested entity was not found", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS, modelScoped: true },
   { provider: "codex", text: "model is not supported when using codex with a chatgpt account", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS },
   // Intl gateway blocks affect the account/IP, so let the connection back off.
   { provider: "codebuddy-intl", text: "request illegal", backoff: true },
@@ -77,6 +80,7 @@ export const ERROR_RULES = [
   { text: "overloaded",               backoff: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
+  { provider: "antigravity", status: 404, cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS, modelScoped: true },
   { status: 401, cooldownMs: COOLDOWN.long },
   { status: 402, cooldownMs: COOLDOWN.long },
   { status: 403, cooldownMs: COOLDOWN.long },

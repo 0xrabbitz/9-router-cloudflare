@@ -100,4 +100,77 @@ describe("Cloudflare Worker runtime compatibility", () => {
     const txOut = await adapter.transaction(async () => "done");
     expect(txOut).toBe("done");
   });
+
+  it("runMigrationOnce skips D1 DDL when d1SchemaSig and table count match", async () => {
+    const execCalls = [];
+    const runCalls = [];
+    const { TABLES, SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    const sig = `v${SCHEMA_VERSION}:${Object.keys(TABLES).length}:${Object.values(TABLES).reduce(
+      (sum, def) => sum + Object.keys(def.columns).length + (def.indexes?.length || 0),
+      0
+    )}`;
+
+    const fakeD1 = {
+      prepare(sql) {
+        return {
+          bind(...args) {
+            return {
+              run: async () => { runCalls.push({ sql, args }); return { meta: { changes: 1 } }; },
+              first: async () => ({ sig, cnt: Object.keys(TABLES).length }),
+              all: async () => ({ results: [] }),
+            };
+          },
+          run: async () => { runCalls.push({ sql, args: [] }); return { meta: { changes: 1 } }; },
+          first: async () => ({ sig, cnt: Object.keys(TABLES).length }),
+          all: async () => ({ results: [] }),
+        };
+      },
+      exec: async (sql) => { execCalls.push(sql); },
+    };
+
+    const { runMigrationOnce } = await import("@/lib/db/migrate.js");
+    const adapter = createD1Adapter(fakeD1);
+    await runMigrationOnce(adapter);
+
+    expect(execCalls).toEqual([]);
+    expect(runCalls).toEqual([]);
+  });
+
+  it("runMigrationOnce batches D1 table and index DDL and stamps d1SchemaSig on cold DB", async () => {
+    const execCalls = [];
+    const runCalls = [];
+    const { TABLES, SCHEMA_VERSION } = await import("@/lib/db/schema.js");
+    const expectedSig = `v${SCHEMA_VERSION}:${Object.keys(TABLES).length}:${Object.values(TABLES).reduce(
+      (sum, def) => sum + Object.keys(def.columns).length + (def.indexes?.length || 0),
+      0
+    )}`;
+
+    const fakeD1 = {
+      prepare(sql) {
+        return {
+          bind(...args) {
+            return {
+              run: async () => { runCalls.push({ sql, args }); return { meta: { changes: 1 } }; },
+              first: async () => { throw new Error("no such table: _meta"); },
+              all: async () => ({ results: [] }),
+            };
+          },
+          run: async () => { runCalls.push({ sql, args: [] }); return { meta: { changes: 1 } }; },
+          first: async () => { throw new Error("no such table: _meta"); },
+          all: async () => ({ results: [] }),
+        };
+      },
+      exec: async (sql) => { execCalls.push(sql); },
+    };
+
+    const { runMigrationOnce } = await import("@/lib/db/migrate.js");
+    const adapter = createD1Adapter(fakeD1);
+    await runMigrationOnce(adapter);
+
+    // 1 batched exec for tables + 1 batched exec for indexes
+    expect(execCalls.length).toBe(2);
+    expect(execCalls[0]).toContain("CREATE TABLE IF NOT EXISTS");
+    expect(execCalls[1]).toContain("CREATE INDEX IF NOT EXISTS");
+    expect(runCalls).toContainEqual(expect.objectContaining({ args: [expectedSig] }));
+  });
 });

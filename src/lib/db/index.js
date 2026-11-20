@@ -4,6 +4,10 @@ import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
 
+import { invalidateSettingsCache } from "./repos/settingsRepo.js";
+import { invalidateProxyPoolsCache } from "./repos/proxyPoolsRepo.js";
+import { invalidateApiKeysCache } from "./repos/apiKeysRepo.js";
+
 // Settings
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
@@ -69,7 +73,7 @@ export { runBackground } from "../background.js";
 
 // Request details
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders, isObservabilityEnabled,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB
@@ -188,6 +192,11 @@ export async function importDb(payload) {
       await db.run(`INSERT OR REPLACE INTO kv(scope, key, value) VALUES('pricing', ?, ?)`, [provider, stringifyJson(models || {})]);
     }
   });
+
+  invalidateSettingsCache();
+  invalidateProxyPoolsCache();
+  invalidateApiKeysCache();
+  globalThis?.__9rInvalidateObsConfig?.();
 
   return await exportDb();
 }

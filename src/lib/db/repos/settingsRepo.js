@@ -104,14 +104,35 @@ export function mergeWithDefaults(raw) {
   return merged;
 }
 
+let _settingsCache = null;
+let _settingsWriteGen = 0;
+const SETTINGS_CACHE_TTL_MS = 2000;
+
+export function invalidateSettingsCache() {
+  _settingsCache = null;
+}
+
 export async function getSettings() {
-  const raw = await readRaw();
-  return mergeWithDefaults(raw);
+  const db = await getAdapter();
+  const now = Date.now();
+  if (_settingsCache && _settingsCache.db === db && (now - _settingsCache.ts) < SETTINGS_CACHE_TTL_MS) {
+    return { ..._settingsCache.merged };
+  }
+  const gen = _settingsWriteGen;
+  const row = await db.get(`SELECT data FROM settings WHERE id = 1`);
+  const raw = row ? parseJson(row.data, {}) : {};
+  const merged = mergeWithDefaults(raw);
+  if (gen === _settingsWriteGen) {
+    _settingsCache = { db, merged, ts: Date.now() };
+  }
+  return { ...merged };
 }
 
 // Atomic read-merge-write inside transaction (prevents losing concurrent updates)
 export async function updateSettings(updates) {
   const db = await getAdapter();
+  _settingsWriteGen++;
+  _settingsCache = null;
   let next;
   await db.transaction(async function () {
     const row = await db.get(`SELECT data FROM settings WHERE id = 1`);
@@ -122,7 +143,10 @@ export async function updateSettings(updates) {
       [stringifyJson(next)],
     );
   });
-  return mergeWithDefaults(next);
+  const merged = mergeWithDefaults(next);
+  _settingsCache = { db, merged, ts: Date.now() };
+  globalThis?.__9rInvalidateObsConfig?.();
+  return { ...merged };
 }
 
 export async function isCloudEnabled() {
